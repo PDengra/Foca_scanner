@@ -71,26 +71,25 @@ async function updateTable() {
     const response = await fetch("/status/{{ domain }}");
     const data = await response.json();
     const table = document.getElementById("resultsTable");
-    // Limpiar tabla excepto encabezados
     table.innerHTML = `<tr>
 <th>Archivo</th><th>URL</th><th>Tamaño (bytes)</th>
 <th>Autor</th><th>Título</th><th>Creación</th><th>Modificación</th>
 <th>Software</th><th>Comentarios</th><th>Plantilla/Ruta</th>
 </tr>`;
     for (const row of data.rows) {
-        const meta = row[3];
+        const meta = row[3] || {};
         table.insertAdjacentHTML("beforeend", `
 <tr>
 <td>${row[0]}</td>
 <td><a href="${row[1]}" target="_blank">Abrir</a></td>
 <td>${row[2]}</td>
-<td>${meta.Author || ""}</td>
-<td>${meta.Title || ""}</td>
-<td>${meta.CreateDate || ""}</td>
-<td>${meta.ModifyDate || ""}</td>
-<td>${meta.CreatorTool || ""}</td>
-<td>${meta.Comments || ""}</td>
-<td>${meta.Template || meta.SourceFile || ""}</td>
+<td>${meta.author || ""}</td>
+<td>${meta.title || ""}</td>
+<td>${meta.createdate || meta.created || ""}</td>
+<td>${meta.modifydate || meta.modified || ""}</td>
+<td>${meta.creatortool || ""}</td>
+<td>${meta.comments || ""}</td>
+<td>${meta.template || meta.sourcefile || ""}</td>
 </tr>
 `);
     }
@@ -119,15 +118,22 @@ def get_files(domain=None):
             filename, url, filesize, metadata_json = r
         else:
             _, filename, url, filesize, metadata_json = r
+
+        # ✅ Normalizar metadatos
         try:
             meta = json.loads(metadata_json) if metadata_json else {}
-        except:
+            if isinstance(meta, dict):
+                meta = {k.lower(): v for k, v in meta.items()}  # 🔧 Forzamos claves minúsculas
+            else:
+                meta = {}
+        except json.JSONDecodeError:
             meta = {}
+
         rows.append((filename, url, filesize, meta))
     return rows
 
 def crawl_domain(domain):
-    from scanner import scan_domain  # Asegúrate que esta función exista en scanner.py
+    from scanner import scan_domain
     SCAN_STATUS[domain] = {"status": "in_progress", "rows": []}
     scan_domain(domain)
     rows = get_files(domain)
@@ -171,3 +177,4 @@ def metrics():
 if __name__ == "__main__":
     os.makedirs(DATA_DIR, exist_ok=True)
     app.run(host="0.0.0.0", port=5000)
+

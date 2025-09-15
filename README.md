@@ -28,6 +28,7 @@ Hilos en Python para escaneo en segundo plano y dashboard interactivo
 
 foca_scanner/
 ├─ scanner.py # Script principal para escaneo de dominios
+
 ├─ web_app.py # Interfaz web con dashboard en tiempo real
 ├─ requirements.txt # Dependencias Python
 ├─ README.md # Descripción del proyecto

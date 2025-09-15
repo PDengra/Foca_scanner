@@ -31,11 +31,17 @@ foca_scanner/
 ├─ scanner.py # Script principal para escaneo de dominios
 
 ├─ web_app.py # Interfaz web con dashboard en tiempo real
+
 ├─ requirements.txt # Dependencias Python
+
 ├─ README.md # Descripción del proyecto
+
 ├─ domains.txt # Lista de dominios de ejemplo
+
 ├─ .gitignore # Archivos/carpetas a ignorar
+
 ├─ data/ # Carpeta vacía para la base de datos
+
 └─ downloads/ # Carpeta vacía para archivos descargados
 
 🔍 Valor añadido:

@@ -36,8 +36,6 @@ foca_scanner/
 
 ├─ README.md # Descripción del proyecto
 
-├─ domains.txt # Lista de dominios de ejemplo
-
 ├─ .gitignore # Archivos/carpetas a ignorar
 
 ├─ data/ # Carpeta vacía para la base de datos

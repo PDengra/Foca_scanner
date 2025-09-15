@@ -4,7 +4,7 @@ Me complace compartir un proyecto personal/profesional en el que he estado traba
 
 💡 Qué hace FOCA Scanner:
 
-Escanea automáticamente dominios y detecta archivos PDF, DOCX, XLSX, PPTX.
+Escanea automáticamente dominios y detecta archivos PDF, DOCX, XLSX, XLS, PPTX, PPT, PPTX, ODT, ODS, TXT Y RTF.
 
 Extrae metadatos críticos de cada archivo: Autor, Título, Fecha de creación/modificación, Software usado, Comentarios internos y rutas/plantillas.
 

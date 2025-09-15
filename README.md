@@ -55,9 +55,11 @@ Interfaz web en tiempo real, lo que facilita la visualización de resultados mie
 ----------------USO-------------------
 
 - Crear carpetas vacías data/ y downloads/
+  
   mkdir data downloads
 
 - Ejecutar la web en la terminal
+  
   python web_app.py
   
 - Abrir en el navegador http://localhost:5000/ y poner el dominio a escanear.

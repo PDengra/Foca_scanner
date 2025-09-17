@@ -50,7 +50,7 @@ TEMPLATE = """
 </head>
 <body class="bg-light">
 <div class="container mt-4 mb-5">
-    <h1 class="text-center mb-4">📊 FOCA Scanner Dashboard</h1>
+    <h1 class="text-center mb-4">📊 FOCA Scanner</h1>
 
     <form class="d-flex justify-content-center mb-3" method="GET">
         <input class="form-control w-50 me-2" type="text" name="q" value="{{ query }}" placeholder="Buscar dominio o archivo...">

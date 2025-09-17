@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import sqlite3
 import json
@@ -18,10 +17,40 @@ TEMPLATE = """
     <title>FOCA Scanner - Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .metadata-cell {
+            max-height: 120px;
+            overflow-y: auto;
+            font-size: 0.85rem;
+        }
+        /* Botones de scroll */
+        .scroll-btn {
+            position: fixed;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            background-color: #0d6efd;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            cursor: pointer;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+        }
+        .scroll-btn:hover {
+            background-color: #0b5ed7;
+        }
+        #scroll-up { top: 80px; }
+        #scroll-down { top: 130px; }
+    </style>
 </head>
 <body class="bg-light">
-<div class="container mt-4">
-    <h1 class="text-center mb-4">📊 FOCA Scanner</h1>
+<div class="container mt-4 mb-5">
+    <h1 class="text-center mb-4">📊 FOCA Scanner Dashboard</h1>
 
     <form class="d-flex justify-content-center mb-3" method="GET">
         <input class="form-control w-50 me-2" type="text" name="q" value="{{ query }}" placeholder="Buscar dominio o archivo...">
@@ -57,7 +86,7 @@ TEMPLATE = """
                                 <a href="{{ row['url'] }}" target="_blank">{{ row['filename'] }}</a><br>
                                 <small class="text-muted">{{ row['extension'] }} | {{ row['filesize'] }} bytes</small>
                             </td>
-                            <td>
+                            <td class="metadata-cell">
                                 {% if row['metadata'] %}
                                     {% for k, v in row['metadata'].items() %}
                                         {% if k not in ["SensitiveFindings", "ExtractedText"] and v %}
@@ -111,7 +140,20 @@ TEMPLATE = """
         {% endif %}
     {% endif %}
 </div>
+
+<!-- Botones de scroll -->
+<button class="scroll-btn" id="scroll-up" title="Subir">&#9650;</button>
+<button class="scroll-btn" id="scroll-down" title="Bajar">&#9660;</button>
+
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+document.getElementById("scroll-up").addEventListener("click", () => {
+    window.scrollBy({ top: -300, behavior: 'smooth' });
+});
+document.getElementById("scroll-down").addEventListener("click", () => {
+    window.scrollBy({ top: 300, behavior: 'smooth' });
+});
+</script>
 </body>
 </html>
 """

@@ -113,18 +113,18 @@ def extract_metadata(local_path, content):
     ext = os.path.splitext(local_path)[1].lower()
 
     try:
-        # PDF con fitz
+        # PDF con fitz si está disponible
         if ext == ".pdf" and fitz:
             try:
                 doc = fitz.open(stream=content, filetype="pdf")
-                meta.update(doc.metadata)
+                meta.update(doc.metadata or {})
                 for page in doc:
                     text += page.get_text() or ""
             except Exception as e:
-                print(f"[WARN] Error PDF {local_path} con fitz: {e}")
+                print(f"[WARN] fitz falló para {local_path}: {e}")
 
         # PDF fallback PyPDF2
-        elif ext == ".pdf":
+        if ext == ".pdf":
             try:
                 reader = PdfReader(BytesIO(content))
                 if reader.metadata:
@@ -133,7 +133,7 @@ def extract_metadata(local_path, content):
                 for page in reader.pages:
                     text += page.extract_text() or ""
             except Exception as e:
-                print(f"[WARN] Error PDF {local_path} con PyPDF2: {e}")
+                print(f"[WARN] PyPDF2 falló para {local_path}: {e}")
 
         # DOCX
         elif ext == ".docx":
@@ -149,7 +149,10 @@ def extract_metadata(local_path, content):
         elif ext == ".doc" and olefile:
             try:
                 ole = olefile.OleFileIO(BytesIO(content))
-                meta["Author"] = ole.get_metadata().author if ole.get_metadata() else None
+                md = ole.get_metadata()
+                if md:
+                    meta["Author"] = md.author
+                    meta["Title"] = md.title
             except Exception as e:
                 print(f"[WARN] No se pudo extraer DOC {local_path}: {e}")
 
@@ -170,8 +173,8 @@ def extract_metadata(local_path, content):
             except Exception as e:
                 print(f"[WARN] No se pudo extraer ODF {local_path}: {e}")
 
-        # Imágenes
-        elif ext in [".jpg", ".jpeg", ".tiff"]:
+        # Imágenes (EXIF)
+        elif ext in [".jpg", ".jpeg", ".tiff", ".tif"]:
             try:
                 img = Image.open(BytesIO(content))
                 exif = img._getexif()
@@ -290,3 +293,4 @@ if __name__ == "__main__":
             if domain:
                 print(f"\n=== Escaneando dominio: {domain} ===")
                 scan_domain(domain)
+

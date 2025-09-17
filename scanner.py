@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import os
 import re
@@ -14,6 +13,28 @@ import docx
 from PIL import Image
 from PIL.ExifTags import TAGS
 
+# Opcional para Word antiguos / Excel / LibreOffice
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
+
+try:
+    import olefile
+except ImportError:
+    olefile = None
+
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
+
+try:
+    from odf import text, teletype
+    from odf.opendocument import load as odf_load
+except ImportError:
+    odf_load = None
+
 # ---------------- CONFIG ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -25,19 +46,15 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FOCA-Scanner/3.0)"}
 
-# === TODAS LAS EXTENSIONES POSIBLES PARA OSINT ===
+# ---------------- EXTENSIONES ----------------
 ALLOWED_EXTENSIONS = (
-    # Documentos
     ".pdf", ".doc", ".docx", ".dot", ".dotx",
     ".ppt", ".pptx", ".pps", ".ppsx",
     ".xls", ".xlsx", ".xlsm", ".csv", ".ods", ".odt", ".odp",
     ".rtf", ".txt", ".xml", ".json", ".yaml", ".yml",
     ".html", ".htm",
-    # Imagenes (metadatos EXIF)
     ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif", ".svg", ".webp",
-    # Archivos comprimidos (solo descarga)
     ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
-    # Código / Config
     ".conf", ".ini", ".log", ".py", ".js", ".php", ".sh", ".bat", ".ps1"
 )
 
@@ -93,18 +110,30 @@ def insert_file_record(domain, url, local_path, filename, ext, filesize, metadat
 def extract_metadata(local_path, content):
     meta = {}
     text = ""
+    ext = os.path.splitext(local_path)[1].lower()
 
     try:
-        ext = os.path.splitext(local_path)[1].lower()
+        # PDF con fitz
+        if ext == ".pdf" and fitz:
+            try:
+                doc = fitz.open(stream=content, filetype="pdf")
+                meta.update(doc.metadata)
+                for page in doc:
+                    text += page.get_text() or ""
+            except Exception as e:
+                print(f"[WARN] Error PDF {local_path} con fitz: {e}")
 
-        # PDF
-        if ext == ".pdf":
-            reader = PdfReader(BytesIO(content))
-            if reader.metadata:
-                for k, v in reader.metadata.items():
-                    meta[k.replace("/", "")] = str(v)
-            for page in reader.pages:
-                text += page.extract_text() or ""
+        # PDF fallback PyPDF2
+        elif ext == ".pdf":
+            try:
+                reader = PdfReader(BytesIO(content))
+                if reader.metadata:
+                    for k, v in reader.metadata.items():
+                        meta[k.replace("/", "")] = str(v)
+                for page in reader.pages:
+                    text += page.extract_text() or ""
+            except Exception as e:
+                print(f"[WARN] Error PDF {local_path} con PyPDF2: {e}")
 
         # DOCX
         elif ext == ".docx":
@@ -116,7 +145,32 @@ def extract_metadata(local_path, content):
             meta["ModifyDate"] = str(core_props.modified) if core_props.modified else None
             text = "\n".join([p.text for p in doc.paragraphs])
 
-        # Imágenes (EXIF)
+        # DOC antiguos
+        elif ext == ".doc" and olefile:
+            try:
+                ole = olefile.OleFileIO(BytesIO(content))
+                meta["Author"] = ole.get_metadata().author if ole.get_metadata() else None
+            except Exception as e:
+                print(f"[WARN] No se pudo extraer DOC {local_path}: {e}")
+
+        # XLS / XLSX
+        elif ext in [".xls", ".xlsx"] and openpyxl:
+            try:
+                from openpyxl import load_workbook
+                wb = load_workbook(BytesIO(content), data_only=True)
+                meta["Sheets"] = wb.sheetnames
+            except Exception as e:
+                print(f"[WARN] No se pudo extraer Excel {local_path}: {e}")
+
+        # ODT / ODS / ODP
+        elif ext in [".odt", ".ods", ".odp"] and odf_load:
+            try:
+                doc = odf_load(BytesIO(content))
+                meta["Info"] = "Documento ODF cargado"
+            except Exception as e:
+                print(f"[WARN] No se pudo extraer ODF {local_path}: {e}")
+
+        # Imágenes
         elif ext in [".jpg", ".jpeg", ".tiff"]:
             try:
                 img = Image.open(BytesIO(content))

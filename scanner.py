@@ -12,28 +12,7 @@ from PyPDF2 import PdfReader
 import docx
 from PIL import Image
 from PIL.ExifTags import TAGS
-
-# Opcional para Word antiguos / Excel / LibreOffice
-try:
-    import fitz  # PyMuPDF
-except ImportError:
-    fitz = None
-
-try:
-    import olefile
-except ImportError:
-    olefile = None
-
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
-
-try:
-    from odf import text, teletype
-    from odf.opendocument import load as odf_load
-except ImportError:
-    odf_load = None
+from flask import Flask, render_template_string, request, redirect, url_for, flash
 
 # ---------------- CONFIG ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -45,8 +24,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FOCA-Scanner/3.0)"}
-
-# ---------------- EXTENSIONES ----------------
 ALLOWED_EXTENSIONS = (
     ".pdf", ".doc", ".docx", ".dot", ".dotx",
     ".ppt", ".pptx", ".pps", ".ppsx",
@@ -61,6 +38,24 @@ ALLOWED_EXTENSIONS = (
 EMAIL_REGEX = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 WINDOWS_PATH_REGEX = r"[A-Z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*"
 SENSITIVE_KEYWORDS = ["password", "contraseña", "usuario", "internal", "confidencial", "secret", "key", "token"]
+
+# Opcional para Word antiguos / Excel / LibreOffice
+try:
+    import fitz
+except ImportError:
+    fitz = None
+try:
+    import olefile
+except ImportError:
+    olefile = None
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
+try:
+    from odf.opendocument import load as odf_load
+except ImportError:
+    odf_load = None
 
 # ---------------- BASE DE DATOS ----------------
 def init_db():
@@ -80,6 +75,13 @@ def init_db():
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_files_domain ON files(domain)")
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS domains (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain TEXT UNIQUE,
+            last_scanned TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -106,24 +108,20 @@ def insert_file_record(domain, url, local_path, filename, ext, filesize, metadat
     conn.commit()
     conn.close()
 
-# ---------------- EXTRACCIÓN DE METADATOS ----------------
+# ---------------- METADATOS ----------------
 def extract_metadata(local_path, content):
     meta = {}
     text = ""
     ext = os.path.splitext(local_path)[1].lower()
-
     try:
-        # PDF con fitz si está disponible
         if ext == ".pdf" and fitz:
             try:
                 doc = fitz.open(stream=content, filetype="pdf")
                 meta.update(doc.metadata or {})
                 for page in doc:
                     text += page.get_text() or ""
-            except Exception as e:
-                print(f"[WARN] fitz falló para {local_path}: {e}")
-
-        # PDF fallback PyPDF2
+            except Exception:
+                pass
         if ext == ".pdf":
             try:
                 reader = PdfReader(BytesIO(content))
@@ -132,82 +130,37 @@ def extract_metadata(local_path, content):
                         meta[k.replace("/", "")] = str(v)
                 for page in reader.pages:
                     text += page.extract_text() or ""
-            except Exception as e:
-                print(f"[WARN] PyPDF2 falló para {local_path}: {e}")
-
-        # DOCX
+            except Exception:
+                pass
         elif ext == ".docx":
-            doc = docx.Document(BytesIO(content))
-            core_props = doc.core_properties
-            meta["Author"] = core_props.author
-            meta["Title"] = core_props.title
-            meta["CreateDate"] = str(core_props.created) if core_props.created else None
-            meta["ModifyDate"] = str(core_props.modified) if core_props.modified else None
-            text = "\n".join([p.text for p in doc.paragraphs])
-
-        # DOC antiguos
-        elif ext == ".doc" and olefile:
             try:
-                ole = olefile.OleFileIO(BytesIO(content))
-                md = ole.get_metadata()
-                if md:
-                    meta["Author"] = md.author
-                    meta["Title"] = md.title
-            except Exception as e:
-                print(f"[WARN] No se pudo extraer DOC {local_path}: {e}")
-
-        # XLS / XLSX
-        elif ext in [".xls", ".xlsx"] and openpyxl:
-            try:
-                from openpyxl import load_workbook
-                wb = load_workbook(BytesIO(content), data_only=True)
-                meta["Sheets"] = wb.sheetnames
-            except Exception as e:
-                print(f"[WARN] No se pudo extraer Excel {local_path}: {e}")
-
-        # ODT / ODS / ODP
-        elif ext in [".odt", ".ods", ".odp"] and odf_load:
-            try:
-                doc = odf_load(BytesIO(content))
-                meta["Info"] = "Documento ODF cargado"
-            except Exception as e:
-                print(f"[WARN] No se pudo extraer ODF {local_path}: {e}")
-
-        # Imágenes (EXIF)
-        elif ext in [".jpg", ".jpeg", ".tiff", ".tif"]:
-            try:
-                img = Image.open(BytesIO(content))
-                exif = img._getexif()
-                if exif:
-                    for tag, value in exif.items():
-                        decoded = TAGS.get(tag, tag)
-                        meta[decoded] = str(value)
-            except Exception as e:
-                print(f"[WARN] No EXIF en {local_path}: {e}")
-
-    except Exception as e:
-        print(f"[WARN] No se pudieron extraer metadatos de {local_path}: {e}")
-
+                doc = docx.Document(BytesIO(content))
+                core_props = doc.core_properties
+                meta["Author"] = core_props.author
+                meta["Title"] = core_props.title
+                meta["CreateDate"] = str(core_props.created) if core_props.created else None
+                meta["ModifyDate"] = str(core_props.modified) if core_props.modified else None
+                text = "\n".join([p.text for p in doc.paragraphs])
+            except Exception:
+                pass
+    except Exception:
+        pass
     if text:
         meta["ExtractedText"] = text
-
     return meta
 
-# ---------------- DETECCIÓN DE INFO SENSIBLE ----------------
+# ---------------- INFO SENSIBLE ----------------
 def detect_sensitive_info(text, url):
     findings = []
     emails = re.findall(EMAIL_REGEX, text)
     if emails:
         findings.append({"type": "email", "values": list(set(emails))})
-
     paths = re.findall(WINDOWS_PATH_REGEX, text)
     if paths:
         findings.append({"type": "path", "values": list(set(paths))})
-
     for kw in SENSITIVE_KEYWORDS:
         if re.search(kw, text, re.IGNORECASE):
             findings.append({"type": "keyword", "values": [kw]})
-
     if findings:
         print(f"[ALERTA] Posible info sensible en {url}: {findings}")
     return findings
@@ -219,11 +172,9 @@ def save_file(domain, url, content, metadata):
     local_path = os.path.join(DOWNLOAD_DIR, filename)
     with open(local_path, "wb") as f:
         f.write(content)
-
     metadata["SensitiveFindings"] = []
     if "ExtractedText" in metadata:
         metadata["SensitiveFindings"] = detect_sensitive_info(metadata["ExtractedText"], url)
-
     insert_file_record(domain, url, local_path, filename, ext, len(content), metadata)
 
 # ---------------- CRAWLER ----------------
@@ -238,26 +189,21 @@ def already_scanned(url):
 def crawl(domain, base_url, max_depth=2):
     visited = set()
     to_visit = [(base_url.rstrip("/"), 0)]
-
     while to_visit:
         url, depth = to_visit.pop()
         if url in visited or depth > max_depth:
             continue
         visited.add(url)
-
         try:
             resp = requests.get(url, headers=HEADERS, timeout=10)
             if "text/html" not in resp.headers.get("Content-Type", ""):
                 continue
             soup = BeautifulSoup(resp.text, "html.parser")
-
             for link in soup.find_all("a", href=True):
                 href = urljoin(url, link["href"])
                 parsed = urlparse(href)
-
                 if parsed.netloc and parsed.netloc != urlparse(base_url).netloc:
                     continue
-
                 if any(href.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS):
                     if not already_scanned(href):
                         try:
@@ -269,28 +215,114 @@ def crawl(domain, base_url, max_depth=2):
                                     file_resp.content
                                 )
                                 save_file(domain, href, file_resp.content, metadata)
-                            else:
-                                print(f"[WARN] {href} -> status {file_resp.status_code}")
                         except Exception as e:
-                            print(f"[ERR] No se pudo descargar {href}: {e}")
+                            print(f"[ERR] {href}: {e}")
                 else:
                     if depth < max_depth:
                         to_visit.append((href, depth + 1))
-
         except Exception as e:
             print(f"[ERR] {url}: {e}")
 
-# ---------------- MAIN ----------------
 def scan_domain(domain):
     base_url = f"http://{domain}"
     crawl(domain, base_url)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO domains (domain, last_scanned) VALUES (?,?)", (domain, datetime.utcnow().isoformat()))
+    c.execute("UPDATE domains SET last_scanned=? WHERE domain=?", (datetime.utcnow().isoformat(), domain))
+    conn.commit()
+    conn.close()
+
+# ---------------- FLASK WEB ----------------
+app = Flask(__name__)
+app.secret_key = "foca_secret"
+
+TEMPLATE = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>FOCA Scanner</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<div class="container mt-4">
+<h1 class="text-center">📊 FOCA Scanner</h1>
+
+<form class="d-flex mb-3" method="POST" action="/">
+<input class="form-control me-2" type="text" name="new_domain" placeholder="Añadir dominio" required>
+<button class="btn btn-success" type="submit">Añadir</button>
+</form>
+
+{% with messages = get_flashed_messages() %}
+{% if messages %}
+  <div class="alert alert-info">{{ messages[0] }}</div>
+{% endif %}
+{% endwith %}
+
+<h3>Dominios escaneados:</h3>
+<table class="table table-striped table-sm">
+<thead class="table-dark"><tr><th>Dominio</th><th>Último Escaneo</th><th>Acciones</th></tr></thead>
+<tbody>
+{% for d in domains %}
+<tr>
+<td>{{ d['domain'] }}</td>
+<td>{{ d['last_scanned'] or '-' }}</td>
+<td>
+<form style="display:inline" method="POST" action="/scan/{{ d['domain'] }}">
+<button class="btn btn-primary btn-sm">Escanear</button>
+</form>
+<form style="display:inline" method="POST" action="/clear/{{ d['domain'] }}">
+<button class="btn btn-danger btn-sm">Limpiar descargas</button>
+</form>
+</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+</body>
+</html>
+"""
+
+@app.route("/", methods=["GET","POST"])
+def index():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    if request.method == "POST":
+        new_domain = request.form.get("new_domain")
+        if new_domain:
+            c.execute("INSERT OR IGNORE INTO domains (domain) VALUES (?)", (new_domain,))
+            conn.commit()
+            flash(f"Dominio {new_domain} añadido")
+        return redirect(url_for("index"))
+    c.execute("SELECT * FROM domains ORDER BY id DESC")
+    domains = [dict(row) for row in map(dict, c.fetchall())]
+    conn.close()
+    return render_template_string(TEMPLATE, domains=domains)
+
+@app.route("/scan/<domain>", methods=["POST"])
+def scan(domain):
+    scan_domain(domain)
+    flash(f"Dominio {domain} escaneado")
+    return redirect(url_for("index"))
+
+@app.route("/clear/<domain>", methods=["POST"])
+def clear(domain):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT local_path FROM files WHERE domain=?", (domain,))
+    paths = c.fetchall()
+    for p in paths:
+        path = p[0]
+        if os.path.exists(path):
+            os.remove(path)
+    c.execute("DELETE FROM files WHERE domain=?", (domain,))
+    conn.commit()
+    conn.close()
+    flash(f"Archivos y registros del dominio {domain} eliminados")
+    return redirect(url_for("index"))
 
 if __name__ == "__main__":
     init_db()
-    with open("domains.txt") as f:
-        for line in f:
-            domain = line.strip()
-            if domain:
-                print(f"\n=== Escaneando dominio: {domain} ===")
-                scan_domain(domain)
-
+    app.run(host="0.0.0.0", port=5000, debug=True)

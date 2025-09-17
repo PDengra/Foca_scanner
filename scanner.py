@@ -1,35 +1,51 @@
+
 #!/usr/bin/env python3
 import os
 import re
-import sys
 import json
-import time
 import sqlite3
 import requests
-import mimetypes
 from bs4 import BeautifulSoup
-from datetime import datetime
 from urllib.parse import urljoin, urlparse
+from datetime import datetime
+from io import BytesIO
+from PyPDF2 import PdfReader
+import docx
+from PIL import Image
+from PIL.ExifTags import TAGS
 
-DB_PATH = os.path.expanduser("~/foca_scanner/data/scanner.db")
-DOWNLOAD_DIR = os.path.expanduser("~/foca_scanner/downloads")
+# ---------------- CONFIG ----------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+DB_PATH = os.path.join(DATA_DIR, "scanner.db")
 
-# Extensiones soportadas
-ALLOWED_EXTENSIONS = [
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".odt", ".ods", ".txt", ".rtf"
-]
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0 Safari/537.36"
-}
-
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FOCA-Scanner/3.0)"}
 
+# === TODAS LAS EXTENSIONES POSIBLES PARA OSINT ===
+ALLOWED_EXTENSIONS = (
+    # Documentos
+    ".pdf", ".doc", ".docx", ".dot", ".dotx",
+    ".ppt", ".pptx", ".pps", ".ppsx",
+    ".xls", ".xlsx", ".xlsm", ".csv", ".ods", ".odt", ".odp",
+    ".rtf", ".txt", ".xml", ".json", ".yaml", ".yml",
+    ".html", ".htm",
+    # Imagenes (metadatos EXIF)
+    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif", ".svg", ".webp",
+    # Archivos comprimidos (solo descarga)
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
+    # Código / Config
+    ".conf", ".ini", ".log", ".py", ".js", ".php", ".sh", ".bat", ".ps1"
+)
+
+EMAIL_REGEX = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+WINDOWS_PATH_REGEX = r"[A-Z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*"
+SENSITIVE_KEYWORDS = ["password", "contraseña", "usuario", "internal", "confidencial", "secret", "key", "token"]
+
+# ---------------- BASE DE DATOS ----------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -50,90 +66,121 @@ def init_db():
     conn.commit()
     conn.close()
 
-
-def already_scanned(url):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM files WHERE url = ?", (url,))
-    count = c.fetchone()[0]
-    conn.close()
-    return count > 0
-
-
-def save_file(domain, url, content, metadata_json):
-    filename = url.split("/")[-1]
-    ext = os.path.splitext(filename)[1].lower()
-    local_path = os.path.join(DOWNLOAD_DIR, f"{domain}_{filename}")
-    with open(local_path, "wb") as f:
-        f.write(content)
-
-    filesize = os.path.getsize(local_path)
-
+def insert_file_record(domain, url, local_path, filename, ext, filesize, metadata):
+    selected_meta = {
+        "Author": metadata.get("Author"),
+        "Title": metadata.get("Title"),
+        "CreateDate": metadata.get("CreateDate"),
+        "ModifyDate": metadata.get("ModifyDate"),
+        "CreatorTool": metadata.get("CreatorTool"),
+        "Comments": metadata.get("Comments"),
+        "Template": metadata.get("Template"),
+        "SourceFile": metadata.get("SourceFile"),
+        "ExtractedText": metadata.get("ExtractedText"),
+        "SensitiveFindings": metadata.get("SensitiveFindings")
+    }
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
         INSERT INTO files (domain,url,local_path,filename,extension,filesize,scanned_at,metadata_json)
         VALUES (?,?,?,?,?,?,?,?)
-    """, (
-        domain,
-        url,
-        local_path,
-        filename,
-        ext,
-        filesize,
-        datetime.utcnow().isoformat(),
-        json.dumps(metadata_json, ensure_ascii=False)
-    ))
+    """, (domain, url, local_path, filename, ext, filesize,
+          datetime.utcnow().isoformat(), json.dumps(selected_meta, ensure_ascii=False)))
     conn.commit()
     conn.close()
 
-
-def extract_metadata(local_path):
-    metadata = {}
-    ext = os.path.splitext(local_path)[1].lower()
+# ---------------- EXTRACCIÓN DE METADATOS ----------------
+def extract_metadata(local_path, content):
+    meta = {}
+    text = ""
 
     try:
+        ext = os.path.splitext(local_path)[1].lower()
+
+        # PDF
         if ext == ".pdf":
-            import fitz  # pymupdf
-            doc = fitz.open(local_path)
-            metadata = doc.metadata or {}
-            doc.close()
+            reader = PdfReader(BytesIO(content))
+            if reader.metadata:
+                for k, v in reader.metadata.items():
+                    meta[k.replace("/", "")] = str(v)
+            for page in reader.pages:
+                text += page.extract_text() or ""
 
-        elif ext in [".docx"]:
-            from docx import Document
-            doc = Document(local_path)
-            core = doc.core_properties
-            metadata = {
-                "Author": core.author,
-                "Title": core.title,
-                "Comments": core.comments,
-                "Created": str(core.created),
-                "Modified": str(core.modified)
-            }
+        # DOCX
+        elif ext == ".docx":
+            doc = docx.Document(BytesIO(content))
+            core_props = doc.core_properties
+            meta["Author"] = core_props.author
+            meta["Title"] = core_props.title
+            meta["CreateDate"] = str(core_props.created) if core_props.created else None
+            meta["ModifyDate"] = str(core_props.modified) if core_props.modified else None
+            text = "\n".join([p.text for p in doc.paragraphs])
 
-        elif ext in [".xlsx", ".xlsm", ".xltx"]:
-            from openpyxl import load_workbook
-            wb = load_workbook(local_path, read_only=True)
-            props = wb.properties
-            metadata = {
-                "Author": props.creator,
-                "Title": props.title,
-                "Created": str(props.created),
-                "Modified": str(props.modified)
-            }
+        # Imágenes (EXIF)
+        elif ext in [".jpg", ".jpeg", ".tiff"]:
+            try:
+                img = Image.open(BytesIO(content))
+                exif = img._getexif()
+                if exif:
+                    for tag, value in exif.items():
+                        decoded = TAGS.get(tag, tag)
+                        meta[decoded] = str(value)
+            except Exception as e:
+                print(f"[WARN] No EXIF en {local_path}: {e}")
 
-        # Si no hay librería específica, al menos guarda tamaño y nombre
-        else:
-            metadata = {"info": "No se pudieron extraer metadatos para este tipo de archivo"}
     except Exception as e:
-        metadata = {"error": f"No se pudo extraer metadatos: {e}"}
+        print(f"[WARN] No se pudieron extraer metadatos de {local_path}: {e}")
 
-    return metadata
+    if text:
+        meta["ExtractedText"] = text
 
+    return meta
+
+# ---------------- DETECCIÓN DE INFO SENSIBLE ----------------
+def detect_sensitive_info(text, url):
+    findings = []
+    emails = re.findall(EMAIL_REGEX, text)
+    if emails:
+        findings.append({"type": "email", "values": list(set(emails))})
+
+    paths = re.findall(WINDOWS_PATH_REGEX, text)
+    if paths:
+        findings.append({"type": "path", "values": list(set(paths))})
+
+    for kw in SENSITIVE_KEYWORDS:
+        if re.search(kw, text, re.IGNORECASE):
+            findings.append({"type": "keyword", "values": [kw]})
+
+    if findings:
+        print(f"[ALERTA] Posible info sensible en {url}: {findings}")
+    return findings
+
+# ---------------- GUARDADO ----------------
+def save_file(domain, url, content, metadata):
+    filename = os.path.basename(urlparse(url).path)
+    ext = os.path.splitext(filename)[1].lower()
+    local_path = os.path.join(DOWNLOAD_DIR, filename)
+    with open(local_path, "wb") as f:
+        f.write(content)
+
+    metadata["SensitiveFindings"] = []
+    if "ExtractedText" in metadata:
+        metadata["SensitiveFindings"] = detect_sensitive_info(metadata["ExtractedText"], url)
+
+    insert_file_record(domain, url, local_path, filename, ext, len(content), metadata)
+
+# ---------------- CRAWLER ----------------
+def already_scanned(url):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT id FROM files WHERE url=?", (url,))
+    exists = c.fetchone() is not None
+    conn.close()
+    return exists
 
 def crawl(domain, base_url, max_depth=2):
     visited = set()
-    to_visit = [(base_url, 0)]
+    to_visit = [(base_url.rstrip("/"), 0)]
 
     while to_visit:
         url, depth = to_visit.pop()
@@ -152,7 +199,7 @@ def crawl(domain, base_url, max_depth=2):
                 parsed = urlparse(href)
 
                 if parsed.netloc and parsed.netloc != urlparse(base_url).netloc:
-                    continue  # Ignora dominios externos
+                    continue
 
                 if any(href.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS):
                     if not already_scanned(href):
@@ -160,8 +207,11 @@ def crawl(domain, base_url, max_depth=2):
                             file_resp = requests.get(href, headers=HEADERS, timeout=15)
                             if file_resp.status_code == 200:
                                 print(f"[DL] {href}")
-                                local_metadata = extract_metadata(local_path := os.path.join(DOWNLOAD_DIR, os.path.basename(href)))
-                                save_file(domain, href, file_resp.content, local_metadata)
+                                metadata = extract_metadata(
+                                    os.path.join(DOWNLOAD_DIR, os.path.basename(parsed.path)),
+                                    file_resp.content
+                                )
+                                save_file(domain, href, file_resp.content, metadata)
                             else:
                                 print(f"[WARN] {href} -> status {file_resp.status_code}")
                         except Exception as e:
@@ -173,28 +223,16 @@ def crawl(domain, base_url, max_depth=2):
         except Exception as e:
             print(f"[ERR] {url}: {e}")
 
-
+# ---------------- MAIN ----------------
 def scan_domain(domain):
-    print(f"\n=== Escaneando dominio: {domain} ===")
-    base_url = f"https://{domain}"
+    base_url = f"http://{domain}"
     crawl(domain, base_url)
-
 
 if __name__ == "__main__":
     init_db()
-    if len(sys.argv) < 2:
-        print("Uso: ./scanner.py domains.txt")
-        sys.exit(1)
-
-    domains_file = sys.argv[1]
-    if not os.path.exists(domains_file):
-        print(f"No se encontró {domains_file}")
-        sys.exit(1)
-
-    with open(domains_file, "r") as f:
-        domains = [line.strip() for line in f if line.strip()]
-
-    for domain in domains:
-        scan_domain(domain)
-
-    print("Escaneo completado.")
+    with open("domains.txt") as f:
+        for line in f:
+            domain = line.strip()
+            if domain:
+                print(f"\n=== Escaneando dominio: {domain} ===")
+                scan_domain(domain)

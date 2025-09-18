@@ -1,56 +1,28 @@
-🚀 Proyecto FOCA Scanner – Escaneo automático de dominios y metadatos
+🚀 Nuevo proyecto, llamado DocScanner: tu nuevo aliado en la seguridad de documentos.
 
-Me complace compartir un proyecto personal/profesional en el que he estado trabajando: FOCA Scanner, una herramienta de monitorización y análisis de documentos públicos disponibles en sitios web.
+Estoy emocionado de compartir DocScanner, un proyecto que desarrollé para facilitar la detección de metadatos y contenido sensible en documentos y sitios web.
 
-💡 Qué hace FOCA Scanner:
+Con DocScanner, es posible:
 
-Escanea automáticamente dominios y detecta archivos PDF, DOCX, XLSX, XLS, PPTX, PPT, PPTX, ODT, ODS, TXT Y RTF.
+ 🔹 Analizar archivos en formatos como PDF, Word, Excel, PowerPoint, imágenes y más.
 
-Extrae metadatos críticos de cada archivo: Autor, Título, Fecha de creación/modificación, Software usado, Comentarios internos y rutas/plantillas.
+ 🔹 Extraer metadatos clave (autor, fecha de creación, compañía, GPS, etc.) de manera automática.
 
-Guarda toda la información en una base de datos SQLite para análisis posterior.
+ 🔹 Detectar información sensible como correos electrónicos, rutas de sistemas, contraseñas, tokens o palabras clave confidenciales.
 
-Interfaz web en tiempo real con Flask, mostrando los resultados a medida que se van escaneando los archivos.
+ 🔹 Escanear dominios completos de manera automática y organizada.
 
-Métricas integradas con Prometheus para seguimiento de volumen de datos y archivos procesados.
+ 🔹 Visualizar resultados en una interfaz web intuitiva con la información centrada y clara.
 
-🛠 Tecnologías utilizadas:
+Este proyecto combina Python, Flask, PyPDF2, docx y PIL, integrando análisis de texto, metadatos y detección de datos sensibles para ayudar a empresas y profesionales a proteger su información de manera eficiente.
 
-Python: requests, BeautifulSoup, sqlite3, Flask, prometheus_client
+💡 DocScanner no solo es una herramienta de análisis, sino también una solución educativa para entender qué información puede estar expuesta inadvertidamente en documentos o en la web.
 
-Raspberry Pi como plataforma de ejecución
+Lo podéis encontrar en mi Github, aquí 👉 
 
-SQLite para almacenamiento de resultados
+Si te interesa la seguridad de la información o la auditoría de documentos, te invito a conocer más sobre DocScanner y cómo puede ayudarte a identificar riesgos antes de que se conviertan en problemas.
 
-Hilos en Python para escaneo en segundo plano y dashboard interactivo
-
-🛠 Estructura del proyecto foca_scanner
-
-foca_scanner/
-
-├─ scanner.py # Script principal para escaneo de dominios
-
-├─ web_app.py # Interfaz web con dashboard en tiempo real
-
-├─ requirements.txt # Dependencias Python
-
-├─ README.md # Descripción del proyecto
-
-├─ .gitignore # Archivos/carpetas a ignorar
-
-├─ data/ # Carpeta vacía para la base de datos
-
-└─ downloads/ # Carpeta vacía para archivos descargados
-
-🔍 Valor añadido:
-
-Permite identificar documentos sensibles o información pública que podría ser relevante para auditorías de seguridad o análisis de datos.
-
-Interfaz web en tiempo real, lo que facilita la visualización de resultados mientras el escaneo está en curso.
-
-💻 Este proyecto combina mis conocimientos en desarrollo en Python, automatización de procesos y análisis de información digital, aplicables tanto en seguridad de la información como en gestión documental.
-
-#Python #Flask #Prometheus #Seguridad #DocumentaciónDigital #RaspberryPi #Automatización #DesarrolloDeSoftware
+#Cybersecurity #InfoSec #Python #DocumentSecurity #DataPrivacy #Flask #Metadatos #SeguridadDigital
 
 ----------------USO-------------------
 
@@ -60,6 +32,6 @@ Interfaz web en tiempo real, lo que facilita la visualización de resultados mie
 
 - Ejecutar la web en la terminal
   
-  python web_app.py
+  python docscanner.py
   
 - Abrir en el navegador http://localhost:5000/ y poner el dominio a escanear.

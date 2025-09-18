@@ -3,7 +3,9 @@ import os
 import re
 import json
 import sqlite3
+import threading
 import requests
+from flask import Flask, render_template_string, request, jsonify, send_from_directory
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
@@ -12,7 +14,6 @@ from PyPDF2 import PdfReader
 import docx
 from PIL import Image
 from PIL.ExifTags import TAGS
-from flask import Flask, render_template_string, request, redirect, url_for, flash
 
 # ---------------- CONFIG ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -24,38 +25,22 @@ os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FOCA-Scanner/3.0)"}
+
 ALLOWED_EXTENSIONS = (
     ".pdf", ".doc", ".docx", ".dot", ".dotx",
-    ".ppt", ".pptx", ".pps", ".ppsx",
-    ".xls", ".xlsx", ".xlsm", ".csv", ".ods", ".odt", ".odp",
-    ".rtf", ".txt", ".xml", ".json", ".yaml", ".yml",
-    ".html", ".htm",
-    ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif", ".svg", ".webp",
-    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2",
-    ".conf", ".ini", ".log", ".py", ".js", ".php", ".sh", ".bat", ".ps1"
+    ".ppt", ".pptx", ".xls", ".xlsx", ".txt", ".csv", ".json",
+    ".html", ".htm", ".jpg", ".jpeg", ".png", ".gif"
 )
 
 EMAIL_REGEX = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
 WINDOWS_PATH_REGEX = r"[A-Z]:\\(?:[^\\/:*?\"<>|\r\n]+\\)*"
 SENSITIVE_KEYWORDS = ["password", "contraseña", "usuario", "internal", "confidencial", "secret", "key", "token"]
 
-# Opcional para Word antiguos / Excel / LibreOffice
-try:
-    import fitz
-except ImportError:
-    fitz = None
-try:
-    import olefile
-except ImportError:
-    olefile = None
-try:
-    import openpyxl
-except ImportError:
-    openpyxl = None
-try:
-    from odf.opendocument import load as odf_load
-except ImportError:
-    odf_load = None
+# Control del escaneo
+scanning_threads = []
+stop_scan_flag = threading.Event()
+
+app = Flask(__name__)
 
 # ---------------- BASE DE DATOS ----------------
 def init_db():
@@ -75,27 +60,24 @@ def init_db():
         )
     """)
     c.execute("CREATE INDEX IF NOT EXISTS idx_files_domain ON files(domain)")
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS domains (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT UNIQUE,
-            last_scanned TEXT
-        )
-    """)
     conn.commit()
     conn.close()
 
 def insert_file_record(domain, url, local_path, filename, ext, filesize, metadata):
     selected_meta = {
         "Author": metadata.get("Author"),
+        "LastModifiedBy": metadata.get("LastModifiedBy"),
         "Title": metadata.get("Title"),
+        "Subject": metadata.get("Subject"),
         "CreateDate": metadata.get("CreateDate"),
         "ModifyDate": metadata.get("ModifyDate"),
-        "CreatorTool": metadata.get("CreatorTool"),
-        "Comments": metadata.get("Comments"),
-        "Template": metadata.get("Template"),
-        "SourceFile": metadata.get("SourceFile"),
-        "ExtractedText": metadata.get("ExtractedText"),
+        "Producer": metadata.get("Producer"),
+        "Company": metadata.get("Company"),
+        "Make": metadata.get("Make"),
+        "Model": metadata.get("Model"),
+        "DateTimeOriginal": metadata.get("DateTimeOriginal"),
+        "GPSLatitude": metadata.get("GPSLatitude"),
+        "GPSLongitude": metadata.get("GPSLongitude"),
         "SensitiveFindings": metadata.get("SensitiveFindings")
     }
     conn = sqlite3.connect(DB_PATH)
@@ -108,20 +90,24 @@ def insert_file_record(domain, url, local_path, filename, ext, filesize, metadat
     conn.commit()
     conn.close()
 
-# ---------------- METADATOS ----------------
+def clear_data():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM files")
+    conn.commit()
+    conn.close()
+    for f in os.listdir(DOWNLOAD_DIR):
+        try:
+            os.remove(os.path.join(DOWNLOAD_DIR, f))
+        except:
+            pass
+
+# ---------------- EXTRACCIÓN DE METADATOS ----------------
 def extract_metadata(local_path, content):
     meta = {}
     text = ""
     ext = os.path.splitext(local_path)[1].lower()
     try:
-        if ext == ".pdf" and fitz:
-            try:
-                doc = fitz.open(stream=content, filetype="pdf")
-                meta.update(doc.metadata or {})
-                for page in doc:
-                    text += page.get_text() or ""
-            except Exception:
-                pass
         if ext == ".pdf":
             try:
                 reader = PdfReader(BytesIO(content))
@@ -130,27 +116,43 @@ def extract_metadata(local_path, content):
                         meta[k.replace("/", "")] = str(v)
                 for page in reader.pages:
                     text += page.extract_text() or ""
-            except Exception:
+            except:
                 pass
         elif ext == ".docx":
             try:
                 doc = docx.Document(BytesIO(content))
                 core_props = doc.core_properties
                 meta["Author"] = core_props.author
+                meta["LastModifiedBy"] = core_props.last_modified_by
                 meta["Title"] = core_props.title
+                meta["Subject"] = core_props.subject
                 meta["CreateDate"] = str(core_props.created) if core_props.created else None
                 meta["ModifyDate"] = str(core_props.modified) if core_props.modified else None
                 text = "\n".join([p.text for p in doc.paragraphs])
-            except Exception:
+            except:
                 pass
-    except Exception:
+        elif ext in [".jpg", ".jpeg", ".tiff", ".tif", ".png"]:
+            try:
+                img = Image.open(BytesIO(content))
+                exif = img._getexif()
+                if exif:
+                    for tag, value in exif.items():
+                        decoded = TAGS.get(tag, tag)
+                        meta[decoded] = str(value)
+                        if decoded == "GPSInfo":
+                            gps = value
+                            meta["GPSLatitude"] = str(gps.get(2)) if gps.get(2) else None
+                            meta["GPSLongitude"] = str(gps.get(4)) if gps.get(4) else None
+            except:
+                pass
+    except:
         pass
     if text:
         meta["ExtractedText"] = text
     return meta
 
-# ---------------- INFO SENSIBLE ----------------
-def detect_sensitive_info(text, url):
+# ---------------- DETECCIÓN DE INFO SENSIBLE ----------------
+def detect_sensitive_info(text):
     findings = []
     emails = re.findall(EMAIL_REGEX, text)
     if emails:
@@ -161,21 +163,22 @@ def detect_sensitive_info(text, url):
     for kw in SENSITIVE_KEYWORDS:
         if re.search(kw, text, re.IGNORECASE):
             findings.append({"type": "keyword", "values": [kw]})
-    if findings:
-        print(f"[ALERTA] Posible info sensible en {url}: {findings}")
     return findings
 
 # ---------------- GUARDADO ----------------
 def save_file(domain, url, content, metadata):
     filename = os.path.basename(urlparse(url).path)
+    if not filename:
+        filename = "index.html"
     ext = os.path.splitext(filename)[1].lower()
     local_path = os.path.join(DOWNLOAD_DIR, filename)
     with open(local_path, "wb") as f:
         f.write(content)
     metadata["SensitiveFindings"] = []
     if "ExtractedText" in metadata:
-        metadata["SensitiveFindings"] = detect_sensitive_info(metadata["ExtractedText"], url)
-    insert_file_record(domain, url, local_path, filename, ext, len(content), metadata)
+        metadata["SensitiveFindings"] = detect_sensitive_info(metadata["ExtractedText"])
+    if any(metadata.get(k) for k in ["Author","LastModifiedBy","Title","Subject","CreateDate","ModifyDate","Producer","Company","Make","Model","DateTimeOriginal"]):
+        insert_file_record(domain, url, local_path, filename, ext, len(content), metadata)
 
 # ---------------- CRAWLER ----------------
 def already_scanned(url):
@@ -189,7 +192,7 @@ def already_scanned(url):
 def crawl(domain, base_url, max_depth=2):
     visited = set()
     to_visit = [(base_url.rstrip("/"), 0)]
-    while to_visit:
+    while to_visit and not stop_scan_flag.is_set():
         url, depth = to_visit.pop()
         if url in visited or depth > max_depth:
             continue
@@ -209,120 +212,194 @@ def crawl(domain, base_url, max_depth=2):
                         try:
                             file_resp = requests.get(href, headers=HEADERS, timeout=15)
                             if file_resp.status_code == 200:
-                                print(f"[DL] {href}")
                                 metadata = extract_metadata(
                                     os.path.join(DOWNLOAD_DIR, os.path.basename(parsed.path)),
                                     file_resp.content
                                 )
                                 save_file(domain, href, file_resp.content, metadata)
-                        except Exception as e:
-                            print(f"[ERR] {href}: {e}")
+                        except:
+                            pass
                 else:
                     if depth < max_depth:
                         to_visit.append((href, depth + 1))
-        except Exception as e:
-            print(f"[ERR] {url}: {e}")
+        except:
+            pass
 
 def scan_domain(domain):
     base_url = f"http://{domain}"
+    stop_scan_flag.clear()
     crawl(domain, base_url)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO domains (domain, last_scanned) VALUES (?,?)", (domain, datetime.utcnow().isoformat()))
-    c.execute("UPDATE domains SET last_scanned=? WHERE domain=?", (datetime.utcnow().isoformat(), domain))
-    conn.commit()
-    conn.close()
 
-# ---------------- FLASK WEB ----------------
-app = Flask(__name__)
-app.secret_key = "foca_secret"
-
+# ---------------- FLASK ----------------
 TEMPLATE = """
 <!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
 <title>FOCA Scanner</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+table, th, td { border: 1px solid black; border-collapse: collapse; padding: 5px; vertical-align: top;}
+th { background-color: #f0f0f0; }
+pre { margin:0; }
+</style>
 </head>
-<body class="bg-light">
-<div class="container mt-4">
-<h1 class="text-center">📊 FOCA Scanner</h1>
+<body>
+<h1>FOCA Scanner</h1>
 
-<form class="d-flex mb-3" method="POST" action="/">
-<input class="form-control me-2" type="text" name="new_domain" placeholder="Añadir dominio" required>
-<button class="btn btn-success" type="submit">Añadir</button>
+<h3>Escanear dominio</h3>
+<form method="POST" action="/scan">
+    <input type="text" name="domain" placeholder="example.com" required>
+    <button type="submit">Escanear</button>
+    <button type="button" onclick="stopScan()">Detener escaneo</button>
 </form>
 
-{% with messages = get_flashed_messages() %}
-{% if messages %}
-  <div class="alert alert-info">{{ messages[0] }}</div>
-{% endif %}
-{% endwith %}
+<h3>Subir archivo para analizar</h3>
+<form method="POST" action="/upload_file" enctype="multipart/form-data">
+    <input type="file" name="file" required>
+    <button type="submit">Subir y analizar</button>
+</form>
 
-<h3>Dominios escaneados:</h3>
-<table class="table table-striped table-sm">
-<thead class="table-dark"><tr><th>Dominio</th><th>Último Escaneo</th><th>Acciones</th></tr></thead>
-<tbody>
-{% for d in domains %}
-<tr>
-<td>{{ d['domain'] }}</td>
-<td>{{ d['last_scanned'] or '-' }}</td>
-<td>
-<form style="display:inline" method="POST" action="/scan/{{ d['domain'] }}">
-<button class="btn btn-primary btn-sm">Escanear</button>
+<form method="POST" action="/clear" style="margin-top:10px;">
+    <button type="submit">Limpiar</button>
 </form>
-<form style="display:inline" method="POST" action="/clear/{{ d['domain'] }}">
-<button class="btn btn-danger btn-sm">Limpiar descargas</button>
-</form>
-</td>
-</tr>
-{% endfor %}
-</tbody>
+
+<h3>Archivos con metadatos o info sensible</h3>
+<div id="scan-status"></div>
+<table>
+<thead>
+<tr><th>Archivo</th><th>Metadatos</th><th>Información sensible</th></tr>
+</thead>
+<tbody id="file-list"></tbody>
 </table>
+
+<div>
+<button onclick="prevPage()">Anterior</button>
+<span id="page-info"></span>
+<button onclick="nextPage()">Siguiente</button>
 </div>
+
+<script>
+let currentPage = 1;
+let totalPages = 1;
+let perPage = 5;
+
+async function fetchFiles() {
+    const res = await fetch(`/files_filtered?page=${currentPage}&per_page=${perPage}`);
+    const data = await res.json();
+    const tbody = document.getElementById("file-list");
+    tbody.innerHTML = "";
+    totalPages = data.total_pages;
+    document.getElementById("page-info").textContent = `Página ${currentPage} de ${totalPages}`;
+    document.getElementById("scan-status").textContent = data.scanning ? "Escaneo en curso..." : "Escaneo completado";
+    data.files.forEach(f => {
+        const tr = document.createElement("tr");
+        const tdFile = document.createElement("td");
+        const link = document.createElement("a");
+        link.href = `/download/${f.filename}`;
+        link.textContent = f.filename;
+        link.target="_blank";
+        tdFile.appendChild(link);
+        tr.appendChild(tdFile);
+
+        const tdMeta = document.createElement("td");
+        const metaPre = document.createElement("pre");
+        metaPre.textContent = Object.entries(f.metadata).filter(([k,v])=>v).map(([k,v])=>`${k}: ${v}`).join("\\n");
+        tdMeta.appendChild(metaPre);
+        tr.appendChild(tdMeta);
+
+        const tdSens = document.createElement("td");
+        tdSens.textContent = JSON.stringify(f.sensitive || [], null, 2);
+        tr.appendChild(tdSens);
+
+        tbody.appendChild(tr);
+    });
+}
+
+function nextPage(){
+    if(currentPage<totalPages){ currentPage++; fetchFiles(); }
+}
+function prevPage(){
+    if(currentPage>1){ currentPage--; fetchFiles(); }
+}
+
+function stopScan(){
+    fetch("/stop_scan", {method:"POST"});
+}
+
+setInterval(fetchFiles, 3000);
+fetchFiles();
+</script>
 </body>
 </html>
 """
 
-@app.route("/", methods=["GET","POST"])
+@app.route("/")
 def index():
+    return render_template_string(TEMPLATE)
+
+@app.route("/scan", methods=["POST"])
+def scan():
+    domain = request.form.get("domain")
+    if domain:
+        t = threading.Thread(target=scan_domain, args=(domain,), daemon=True)
+        scanning_threads.append(t)
+        t.start()
+    return ("", 204)
+
+@app.route("/stop_scan", methods=["POST"])
+def stop_scan():
+    stop_scan_flag.set()
+    return ("",204)
+
+@app.route("/clear", methods=["POST"])
+def clear():
+    stop_scan_flag.set()
+    clear_data()
+    return ("", 204)
+
+@app.route("/files_filtered")
+def files_filtered():
+    page = int(request.args.get("page",1))
+    per_page = int(request.args.get("per_page",5))
+    offset = (page-1)*per_page
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    if request.method == "POST":
-        new_domain = request.form.get("new_domain")
-        if new_domain:
-            c.execute("INSERT OR IGNORE INTO domains (domain) VALUES (?)", (new_domain,))
-            conn.commit()
-            flash(f"Dominio {new_domain} añadido")
-        return redirect(url_for("index"))
-    c.execute("SELECT * FROM domains ORDER BY id DESC")
-    domains = [dict(row) for row in map(dict, c.fetchall())]
+    c.execute("SELECT filename, metadata_json FROM files ORDER BY scanned_at DESC LIMIT ? OFFSET ?", (per_page, offset))
+    result = []
+    for row in c.fetchall():
+        filename, metadata_json = row
+        metadata = json.loads(metadata_json)
+        sensitive = metadata.get("SensitiveFindings", [])
+        meta_keys = ["Author","LastModifiedBy","Title","Subject","CreateDate","ModifyDate","Producer","Company","Make","Model","DateTimeOriginal","GPSLatitude","GPSLongitude"]
+        has_meta = any(metadata.get(k) for k in meta_keys)
+        if has_meta or sensitive:
+            result.append({"filename": filename, "metadata": metadata, "sensitive": sensitive})
+    # total count
+    c.execute("SELECT COUNT(*) FROM files")
+    total_count = c.fetchone()[0]
     conn.close()
-    return render_template_string(TEMPLATE, domains=domains)
+    total_pages = max(1,(total_count+per_page-1)//per_page)
+    scanning = any(t.is_alive() for t in scanning_threads)
+    return jsonify({"files": result,"total_pages":total_pages,"scanning":scanning})
 
-@app.route("/scan/<domain>", methods=["POST"])
-def scan(domain):
-    scan_domain(domain)
-    flash(f"Dominio {domain} escaneado")
-    return redirect(url_for("index"))
+@app.route("/download/<path:filename>")
+def download(filename):
+    return send_from_directory(DOWNLOAD_DIR, filename, as_attachment=True)
 
-@app.route("/clear/<domain>", methods=["POST"])
-def clear(domain):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT local_path FROM files WHERE domain=?", (domain,))
-    paths = c.fetchall()
-    for p in paths:
-        path = p[0]
-        if os.path.exists(path):
-            os.remove(path)
-    c.execute("DELETE FROM files WHERE domain=?", (domain,))
-    conn.commit()
-    conn.close()
-    flash(f"Archivos y registros del dominio {domain} eliminados")
-    return redirect(url_for("index"))
+@app.route("/upload_file", methods=["POST"])
+def upload_file():
+    file = request.files.get("file")
+    if file:
+        filename = file.filename
+        local_path = os.path.join(DOWNLOAD_DIR, filename)
+        content = file.read()
+        with open(local_path,"wb") as f:
+            f.write(content)
+        metadata = extract_metadata(local_path, content)
+        save_file("LOCAL_UPLOAD", f"file://{filename}", content, metadata)
+    return ("",204)
 
 if __name__ == "__main__":
     init_db()
+    print("[INFO] FOCA Scanner corriendo en http://0.0.0.0:5000 ...")
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -307,9 +307,16 @@ async function fetchFiles() {
         tdMeta.appendChild(metaPre);
         tr.appendChild(tdMeta);
 
-        const tdSens = document.createElement("td");
-        tdSens.textContent = JSON.stringify(f.sensitive || [], null, 2);
-        tr.appendChild(tdSens);
+       const tdSens = document.createElement("td");
+       const sensList = f.sensitive || [];
+       if (sensList.length === 0) {
+          tdSens.textContent = "—";
+       } else {
+          tdSens.innerHTML = sensList.map(s => {
+               return s.values.map(v => `<div>${s.type}: ${v}</div>`).join("");
+          }).join("");
+       }
+       tr.appendChild(tdSens);
 
         tbody.appendChild(tr);
     });

@@ -24,7 +24,7 @@ DB_PATH = os.path.join(DATA_DIR, "scanner.db")
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; FOCA-Scanner/3.0)"}
+HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; SCANNER/1.0)"}
 
 ALLOWED_EXTENSIONS = (
     ".pdf", ".doc", ".docx", ".dot", ".dotx",
@@ -174,10 +174,16 @@ def save_file(domain, url, content, metadata):
     local_path = os.path.join(DOWNLOAD_DIR, filename)
     with open(local_path, "wb") as f:
         f.write(content)
+
     metadata["SensitiveFindings"] = []
-    if "ExtractedText" in metadata:
-        metadata["SensitiveFindings"] = detect_sensitive_info(metadata["ExtractedText"])
-    if any(metadata.get(k) for k in ["Author","LastModifiedBy","Title","Subject","CreateDate","ModifyDate","Producer","Company","Make","Model","DateTimeOriginal"]):
+    if "ExtractedText" in metadata and metadata["ExtractedText"]:
+        findings = detect_sensitive_info(metadata["ExtractedText"])
+        metadata["SensitiveFindings"] = findings
+
+    important_keys = ["Author","LastModifiedBy","Title","Subject","CreateDate",
+                      "ModifyDate","Producer","Company","Make","Model","DateTimeOriginal",
+                      "GPSLatitude","GPSLongitude"]
+    if any(metadata.get(k) for k in important_keys) or metadata["SensitiveFindings"]:
         insert_file_record(domain, url, local_path, filename, ext, len(content), metadata)
 
 # ---------------- CRAWLER ----------------
@@ -236,15 +242,21 @@ TEMPLATE = """
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>FOCA Scanner</title>
+<title>Scanner Web</title>
 <style>
-table, th, td { border: 1px solid black; border-collapse: collapse; padding: 5px; vertical-align: top;}
-th { background-color: #f0f0f0; }
-pre { margin:0; }
+body { background-color: #e0e0e0; font-family: Arial; display:flex; flex-direction:column; align-items:center; }
+.container { width:90%; max-width:1200px; text-align:center; }
+table { margin:auto; border-collapse: collapse; width: 100%; max-width:1000px; }
+th, td { border: 1px solid black; padding: 5px; vertical-align: top; }
+th { background-color: #c0c0c0; }
+pre { margin:0; text-align:left; }
+button { margin:5px; }
+form { margin-bottom: 10px; }
 </style>
 </head>
 <body>
-<h1>FOCA Scanner</h1>
+<div class="container">
+<h1>Scanner Web</h1>
 
 <h3>Escanear dominio</h3>
 <form method="POST" action="/scan">
@@ -259,7 +271,7 @@ pre { margin:0; }
     <button type="submit">Subir y analizar</button>
 </form>
 
-<form method="POST" action="/clear" style="margin-top:10px;">
+<form method="POST" action="/clear">
     <button type="submit">Limpiar</button>
 </form>
 
@@ -276,6 +288,7 @@ pre { margin:0; }
 <button onclick="prevPage()">Anterior</button>
 <span id="page-info"></span>
 <button onclick="nextPage()">Siguiente</button>
+</div>
 </div>
 
 <script>
@@ -303,20 +316,26 @@ async function fetchFiles() {
 
         const tdMeta = document.createElement("td");
         const metaPre = document.createElement("pre");
-        metaPre.textContent = Object.entries(f.metadata).filter(([k,v])=>v).map(([k,v])=>`${k}: ${v}`).join("\\n");
+        metaPre.textContent = Object.entries(f.metadata)
+            .filter(([k,v])=>v && k!=="SensitiveFindings")
+            .map(([k,v])=>`${k}: ${v}`).join("\\n");
         tdMeta.appendChild(metaPre);
         tr.appendChild(tdMeta);
 
-       const tdSens = document.createElement("td");
-       const sensList = f.sensitive || [];
-       if (sensList.length === 0) {
-          tdSens.textContent = "—";
-       } else {
-          tdSens.innerHTML = sensList.map(s => {
-               return s.values.map(v => `<div>${s.type}: ${v}</div>`).join("");
-          }).join("");
-       }
-       tr.appendChild(tdSens);
+        const tdSens = document.createElement("td");
+        const sensList = f.sensitive || [];
+        if (sensList.length === 0) {
+            tdSens.textContent = "—";
+        } else {
+            const lines = [];
+            sensList.forEach(s => {
+                if (s.values && Array.isArray(s.values)) {
+                    s.values.forEach(v => { lines.push(`${s.type}: ${v}`); });
+                }
+            });
+            tdSens.innerHTML = lines.join("<br>");
+        }
+        tr.appendChild(tdSens);
 
         tbody.appendChild(tr);
     });
@@ -328,11 +347,9 @@ function nextPage(){
 function prevPage(){
     if(currentPage>1){ currentPage--; fetchFiles(); }
 }
-
 function stopScan(){
     fetch("/stop_scan", {method:"POST"});
 }
-
 setInterval(fetchFiles, 3000);
 fetchFiles();
 </script>
@@ -377,11 +394,11 @@ def files_filtered():
         filename, metadata_json = row
         metadata = json.loads(metadata_json)
         sensitive = metadata.get("SensitiveFindings", [])
-        meta_keys = ["Author","LastModifiedBy","Title","Subject","CreateDate","ModifyDate","Producer","Company","Make","Model","DateTimeOriginal","GPSLatitude","GPSLongitude"]
+        meta_keys = ["Author","LastModifiedBy","Title","Subject","CreateDate","ModifyDate","Producer",
+                     "Company","Make","Model","DateTimeOriginal","GPSLatitude","GPSLongitude"]
         has_meta = any(metadata.get(k) for k in meta_keys)
         if has_meta or sensitive:
             result.append({"filename": filename, "metadata": metadata, "sensitive": sensitive})
-    # total count
     c.execute("SELECT COUNT(*) FROM files")
     total_count = c.fetchone()[0]
     conn.close()
@@ -408,5 +425,5 @@ def upload_file():
 
 if __name__ == "__main__":
     init_db()
-    print("[INFO] FOCA Scanner corriendo en http://0.0.0.0:5000 ...")
+    print("[INFO] Scanner Web corriendo en http://0.0.0.0:5000 ...")
     app.run(host="0.0.0.0", port=5000, debug=True)
